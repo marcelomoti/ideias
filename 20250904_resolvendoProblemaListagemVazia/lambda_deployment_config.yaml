@@ -1,0 +1,89 @@
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+  SourceBucket:
+    Type: String
+    Description: Nome do bucket de origem
+  DestBucket:
+    Type: String
+    Description: Nome do bucket de destino
+  SourcePrefix:
+    Type: String
+    Default: ""
+    Description: Prefixo/pasta de origem
+  DestPrefix:
+    Type: String
+    Default: ""
+    Description: Prefixo/pasta de destino
+
+Resources:
+  S3FileMoverFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: s3-file-mover-lambda
+      CodeUri: ./
+      Handler: s3_file_mover_lambda.lambda_handler
+      Runtime: python3.9
+      Timeout: 900  # 15 minutos (máximo para Lambda)
+      MemorySize: 512  # MB - ajustar conforme necessário
+      ReservedConcurrencyLimit: 100  # Controlar concorrência para evitar throttling
+      Environment:
+        Variables:
+          SOURCE_BUCKET: !Ref SourceBucket
+          DEST_BUCKET: !Ref DestBucket
+          SOURCE_PREFIX: !Ref SourcePrefix
+          DEST_PREFIX: !Ref DestPrefix
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref SourceBucket
+        - S3WritePolicy:
+            BucketName: !Ref DestBucket
+        - Statement:
+          - Effect: Allow
+            Action:
+              - s3:DeleteObject
+            Resource: !Sub "${SourceBucket}/*"
+      Events:
+        S3Event:
+          Type: S3
+          Properties:
+            Bucket: !Ref SourceBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: !Ref SourcePrefix
+
+  S3FileMoverStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: s3-file-mover-workflow
+      DefinitionUri: step_function_definition.json
+      DefinitionSubstitutions:
+        LambdaFunctionArn: !GetAtt S3FileMoverFunction.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref S3FileMoverFunction
+      Events:
+        ScheduleEvent:
+          Type: Schedule
+          Properties:
+            Schedule: rate(2 minutes)
+            Input: !Sub |
+              {
+                "source_bucket": "${SourceBucket}",
+                "dest_bucket": "${DestBucket}",
+                "source_prefix": "${SourcePrefix}",
+                "dest_prefix": "${DestPrefix}"
+              }
+
+Outputs:
+  LambdaFunctionArn:
+    Description: ARN da função Lambda
+    Value: !GetAtt S3FileMoverFunction.Arn
+  StateMachineArn:
+    Description: ARN da Step Function
+    Value: !GetAtt S3FileMoverStateMachine.Arn
