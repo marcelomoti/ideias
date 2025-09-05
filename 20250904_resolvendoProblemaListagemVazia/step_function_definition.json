@@ -1,0 +1,58 @@
+{
+  "Comment": "Step Function para movimentação de arquivos S3 a cada 2 minutos",
+  "StartAt": "MoveS3Files",
+  "States": {
+    "MoveS3Files": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "s3-file-mover-lambda",
+        "Payload": {
+          "source_bucket.$": "$.source_bucket",
+          "dest_bucket.$": "$.dest_bucket",
+          "source_prefix.$": "$.source_prefix",
+          "dest_prefix.$": "$.dest_prefix",
+          "max_files_per_execution": 1000,
+          "batch_size": 100
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "HandleError",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "CheckResults"
+    },
+    "CheckResults": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.Payload.body",
+          "StringMatches": "*files_processed*",
+          "Next": "Success"
+        }
+      ],
+      "Default": "HandleError"
+    },
+    "Success": {
+      "Type": "Pass",
+      "Result": "Arquivos movidos com sucesso",
+      "End": true
+    },
+    "HandleError": {
+      "Type": "Pass",
+      "Result": "Erro na movimentação de arquivos",
+      "End": true
+    }
+  }
+}
