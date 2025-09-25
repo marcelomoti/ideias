@@ -1,0 +1,107 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'AWS Lambda functions para merge paralelo de CSVs - 300k arquivos'
+
+Parameters:
+  SourceBucket:
+    Type: String
+    Description: Nome do bucket S3 de origem com os CSVs
+  DestBucket:
+    Type: String
+    Description: Nome do bucket S3 de destino para os CSVs merged
+  SourcePrefix:
+    Type: String
+    Default: ""
+    Description: Prefixo/pasta de origem dos CSVs
+  DestPrefix:
+    Type: String
+    Default: "merged-csvs"
+    Description: Prefixo/pasta de destino dos CSVs merged
+
+Resources:
+  CSVMergeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: csv-merge-lambda
+      CodeUri: ./
+      Handler: csv_merge_lambda.lambda_handler
+      Runtime: python3.9
+      Timeout: 900  # 15 minutos (máximo para Lambda)
+      MemorySize: 1024  # MB - aumentado para processamento de CSVs
+      ReservedConcurrencyLimit: 50  # Controlar concorrência
+      Environment:
+        Variables:
+          SOURCE_BUCKET: !Ref SourceBucket
+          DEST_BUCKET: !Ref DestBucket
+          SOURCE_PREFIX: !Ref SourcePrefix
+          DEST_PREFIX: !Ref DestPrefix
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref SourceBucket
+        - S3WritePolicy:
+            BucketName: !Ref DestBucket
+
+  BatchGeneratorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: csv-batch-generator-lambda
+      CodeUri: ./
+      Handler: batch_generator_lambda.lambda_handler
+      Runtime: python3.9
+      Timeout: 300  # 5 minutos
+      MemorySize: 256  # MB
+      Environment:
+        Variables:
+          SOURCE_BUCKET: !Ref SourceBucket
+          SOURCE_PREFIX: !Ref SourcePrefix
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref SourceBucket
+
+  ResultsAggregatorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: csv-results-aggregator-lambda
+      CodeUri: ./
+      Handler: results_aggregator_lambda.lambda_handler
+      Runtime: python3.9
+      Timeout: 600  # 10 minutos
+      MemorySize: 512  # MB
+      Environment:
+        Variables:
+          DEST_BUCKET: !Ref DestBucket
+          DEST_PREFIX: !Ref DestPrefix
+      Policies:
+        - S3WritePolicy:
+            BucketName: !Ref DestBucket
+
+  CSVMergeStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: csv-parallel-merge-workflow
+      DefinitionUri: step_function_parallel_csv_merge.json
+      DefinitionSubstitutions:
+        BatchGeneratorFunctionArn: !GetAtt BatchGeneratorFunction.Arn
+        CSVMergeFunctionArn: !GetAtt CSVMergeFunction.Arn
+        ResultsAggregatorFunctionArn: !GetAtt ResultsAggregatorFunction.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref BatchGeneratorFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref CSVMergeFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ResultsAggregatorFunction
+
+Outputs:
+  CSVMergeFunctionArn:
+    Description: ARN da função Lambda de merge de CSVs
+    Value: !GetAtt CSVMergeFunction.Arn
+  BatchGeneratorFunctionArn:
+    Description: ARN da função Lambda geradora de lotes
+    Value: !GetAtt BatchGeneratorFunction.Arn
+  ResultsAggregatorFunctionArn:
+    Description: ARN da função Lambda agregadora de resultados
+    Value: !GetAtt ResultsAggregatorFunction.Arn
+  StateMachineArn:
+    Description: ARN da Step Function
+    Value: !GetAtt CSVMergeStateMachine.Arn
