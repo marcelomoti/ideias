@@ -1,0 +1,115 @@
+{
+  "Comment": "Step Function para merge paralelo de CSVs - processa 300k arquivos em lotes de 1000",
+  "StartAt": "InitializeExecution",
+  "States": {
+    "InitializeExecution": {
+      "Type": "Pass",
+      "Parameters": {
+        "source_bucket.$": "$.source_bucket",
+        "dest_bucket.$": "$.dest_bucket", 
+        "source_prefix.$": "$.source_prefix",
+        "dest_prefix.$": "$.dest_prefix",
+        "total_files": 300000,
+        "files_per_batch": 1000,
+        "max_parallel_executions": 50
+      },
+      "Next": "GenerateBatchList"
+    },
+    "GenerateBatchList": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "csv-batch-generator-lambda",
+        "Payload": {
+          "source_bucket.$": "$.source_bucket",
+          "source_prefix.$": "$.source_prefix",
+          "total_files.$": "$.total_files",
+          "files_per_batch.$": "$.files_per_batch"
+        }
+      },
+      "ResultPath": "$.batch_list",
+      "Next": "ProcessBatchesInParallel"
+    },
+    "ProcessBatchesInParallel": {
+      "Type": "Map",
+      "ItemsPath": "$.batch_list.Payload.batches",
+      "MaxConcurrency": 50,
+      "Iterator": {
+        "StartAt": "MergeCSVBatch",
+        "States": {
+          "MergeCSVBatch": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "csv-merge-lambda",
+              "Payload": {
+                "source_bucket.$": "$.source_bucket",
+                "dest_bucket.$": "$.dest_bucket",
+                "source_prefix.$": "$.source_prefix", 
+                "dest_prefix.$": "$.dest_prefix",
+                "batch_start_index.$": "$.batch_start_index",
+                "batch_end_index.$": "$.batch_end_index",
+                "output_filename.$": "$.output_filename",
+                "max_files_per_execution": 1000,
+                "batch_size": 100
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 3,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "Next": "BatchError",
+                "ResultPath": "$.error"
+              }
+            ],
+            "Next": "BatchSuccess"
+          },
+          "BatchSuccess": {
+            "Type": "Pass",
+            "Result": "Batch processado com sucesso",
+            "End": true
+          },
+          "BatchError": {
+            "Type": "Pass",
+            "Parameters": {
+              "error.$": "$.error",
+              "batch_info.$": "$"
+            },
+            "End": true
+          }
+        }
+      },
+      "ResultPath": "$.parallel_results",
+      "Next": "AggregateResults"
+    },
+    "AggregateResults": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "csv-results-aggregator-lambda",
+        "Payload": {
+          "parallel_results.$": "$.parallel_results",
+          "dest_bucket.$": "$.dest_bucket",
+          "dest_prefix.$": "$.dest_prefix"
+        }
+      },
+      "Next": "FinalSuccess"
+    },
+    "FinalSuccess": {
+      "Type": "Pass",
+      "Parameters": {
+        "message": "Merge paralelo de 300k CSVs concluído com sucesso",
+        "total_batches_processed.$": "$.parallel_results",
+        "aggregation_result.$": "$.Payload"
+      },
+      "End": true
+    }
+  }
+}
